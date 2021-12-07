@@ -106,7 +106,7 @@ impl UsbDevice{
         let path: *const i8 = path.as_c_str().as_ptr();
         
         unsafe{
-            let file_desc = open(path,O_RDONLY);
+            let file_desc = open(path,O_RDWR);
             Ok(file_desc)
         }
         
@@ -155,10 +155,9 @@ impl UsbDevice{
         };
 
         unsafe{
-            let pointer = self._interface_number as *const c_int;
-            //let pointer = std::mem::transmute::<*const i32, *const c_void>(pointer);
+            let pointer = self._interface_number;
+            let pointer = std::mem::transmute::<&i32, *const i32>(&pointer);
             let return_value = ioctl(file_descriptor,USBDEVFS_CLAIMINTERFACE,pointer);
-            println!("{}",return_value);
             if return_value > -1 {
                 return Ok(return_value);
             }
@@ -202,7 +201,8 @@ extern "C"{
     pub fn ioctl(file_descriptor: c_int, request:u32,data : *const c_int) ->c_int;
 }
 
-const O_RDONLY:c_int =00;
+//const O_RDONLY:c_int =00;
+const O_RDWR: c_int = 02;
 //IOCTL request type definitions,not sure how portable these are
 //probably will only work on x86_64 systems
 pub const USBDEVFS_CLAIMINTERFACE:u32 = 2147767567;
