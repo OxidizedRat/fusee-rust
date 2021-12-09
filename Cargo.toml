@@ -2,3 +2,6 @@
 name = "switch-rcm-rust"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+errno = "0.2.8"
