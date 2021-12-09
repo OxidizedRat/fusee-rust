@@ -10,15 +10,17 @@ const SWITCH_PID:&str = "7321";     //"1000";
 
 pub trait SwitchRCMDevice{
     fn new() -> Self;
-    fn send_payload();
+    fn read_device_id(&self)->Result<CString, UsbError>;
+    fn send_payload(&self);
 }
 
 pub struct UsbDevice{
-    _vid: String,
-    _pid: String,
-    _sysfs_path: PathBuf,
-    _usbfs_path: PathBuf,
-    _interface_number: i32, //29th byte in usbfs file
+    vid: String,
+    pid: String,
+    sysfs_path: PathBuf,
+    usbfs_path: PathBuf,
+    interface_number: i32, //29th byte in usbfs file
+    file_descriptor: i32,
 }
 
 
@@ -30,7 +32,7 @@ impl UsbDevice{
         let devices_path = Path::new("/sys/bus/usb/devices/");
         
         for device in devices_path.read_dir().expect("Could not read dir"){
-            //ignore errors and iterate over dir entries
+            //only process valid dir entries
             if let Ok(device) = device{
                 //get path
                 let mut path = device.path();
@@ -49,7 +51,7 @@ impl UsbDevice{
                 //remove new line from string
                 vid.pop();
                 //if vendor id is wrong just go to next loop
-                if vid != SWITCH_VID.to_string(){
+                if vid != self.vid.to_string(){
                     continue;
                 }
                 
@@ -66,10 +68,10 @@ impl UsbDevice{
                     Err(_)  => {println!("could not read file");continue},
                 };
                 pid.pop();
-                if pid == SWITCH_PID.to_string(){
+                if pid == self.pid.to_string(){
                     path.pop();
                     
-                    self._sysfs_path = path.clone();
+                    self.sysfs_path = path.clone();
                     match self.set_usbfs_from_sysfs(){
                         Ok(_)       => (),
                         Err(why)    => return Err(why),
@@ -88,10 +90,10 @@ impl UsbDevice{
         return Err(UsbError::CouldNotFindDevice);
     }
     //get file discriptor to use with ioctl calls
-    pub fn get_file_descriptor(&self) -> Result<c_int,UsbError>{
+    pub fn set_file_descriptor(&mut self) -> Result<c_int,UsbError>{
         //convert our pathbuf into a c compatible char pointer    
         //not sure if this formatting is idiomatic
-        let path = match self._usbfs_path
+        let path = match self.usbfs_path
                              .clone()
                              .into_os_string()
                              .into_string(){
@@ -107,16 +109,17 @@ impl UsbDevice{
         
         unsafe{
             let file_desc = open(path,O_RDWR);
+            self.file_descriptor = file_desc;
             Ok(file_desc)
         }
         
     }
     pub fn get_usbfs_path(&self) -> PathBuf{
-        self._usbfs_path.clone()
+        self.usbfs_path.clone()
         
     }
     fn set_usbfs_from_sysfs(&mut self) -> Result<PathBuf,UsbError> {
-        let mut sysfs = self._sysfs_path.clone();
+        let mut sysfs = self.sysfs_path.clone();
         //one way of getting the devpath
         sysfs.push("uevent");
         //read contents of uevent
@@ -135,28 +138,25 @@ impl UsbDevice{
         let devpath = "/dev/".to_string() + devpath;
 
         let path = PathBuf::from(&devpath);
-        self._usbfs_path = path.clone();
+        self.usbfs_path = path.clone();
         Ok(path)
     }
     fn get_binterface_number(&mut self) -> Result<i32,UsbError>{
-        let dev_path = self._usbfs_path.clone();
+        let dev_path = self.usbfs_path.clone();
         let file_buffer = match read(dev_path.as_path()){
             Ok(buffer)      => buffer,
             Err(_)          => return Err(UsbError::CouldNotReadDevPath),
         };
         let interface_num = file_buffer[29].try_into().unwrap();
-        self._interface_number = interface_num;
+        self.interface_number = interface_num;
         Ok(interface_num)
     }
     pub fn claim_interface(&self)-> Result<i32,UsbError>{
-        let file_descriptor = match self.get_file_descriptor(){
-            Ok(fd)      =>fd,
-            Err(why)    => return Err(why),
-        };
+        let file_descriptor = self.file_descriptor;
 
         unsafe{
-            let pointer = self._interface_number;
-            let pointer = std::mem::transmute::<&i32, *const i32>(&pointer);
+            let pointer = self.interface_number;
+            let pointer = std::mem::transmute::<&i32, *const c_void>(&pointer);
             let return_value = ioctl(file_descriptor,USBDEVFS_CLAIMINTERFACE,pointer);
             if return_value > -1 {
                 return Ok(return_value);
@@ -164,21 +164,78 @@ impl UsbDevice{
             Err(UsbError::ClaimingInterfaceFailed)
         }
     }
+    fn read(&self,request: BulkTransfer) -> Result<*const c_void,UsbError>{
+        let fd = self.file_descriptor;
+        let return_value:i32;
+        unsafe{
+            let request = std::mem::transmute::<&BulkTransfer,*const c_void>(&request);
+            return_value = ioctl(fd,USBDEVFS_BULK,request);
+        }
+
+        if return_value>-1{
+            return Ok(request.data);
+        }
+
+        Err(UsbError::ReadError)
+    }
+    //just testing ioctl commands
+    pub fn _get_connect_info(&self) -> Result<ConnectInfo,UsbError>{
+        let fd = self.file_descriptor;
+        let connect_info = &ConnectInfo{
+                                dev_num:0, 
+                                slow : 0,
+        };
+        unsafe{
+            let info_pointer = std::mem::transmute::<&ConnectInfo, *const c_void>(connect_info);
+            let ioctl_ret = ioctl(fd,_USBDEVFS_CONNECTINFO,info_pointer);
+            let connect_info = std::mem::transmute::<*const c_void, &ConnectInfo>(info_pointer);
+            if ioctl_ret >-1{
+                return Ok(*connect_info);
+            }
+        }
+
+        Err(UsbError::ClaimingInterfaceFailed)
+    }
 }
 
 impl SwitchRCMDevice for UsbDevice{
     fn new() -> UsbDevice{
         UsbDevice{
-            _vid : SWITCH_VID.to_string(),
-            _pid : SWITCH_PID.to_string(),
-            _sysfs_path: PathBuf::new(),
-            _usbfs_path: PathBuf::new(),
-            _interface_number: 0,
+            vid : SWITCH_VID.to_string(),
+            pid : SWITCH_PID.to_string(),
+            sysfs_path: PathBuf::new(),
+            usbfs_path: PathBuf::new(),
+            interface_number: 0,
+            file_descriptor: 0,
         }
     }
 
-    fn send_payload(){
+    fn read_device_id(&self)-> Result<CString,UsbError>{
+    
+        let device_id:&[c_char;16] = &[0;16];
+        unsafe{
+        let device_id = std::mem::transmute::<&[c_char;16],*const c_void>(device_id);
+        
+            let request = BulkTransfer{
+                    endpoint : USB_DIR_IN | 1,
+                    length   : 16,
+                    timeout  : 1000,
+                    data     : device_id,
+            };
 
+            let device_id = match self.read(request){
+                Ok(id)      => id,
+                Err(why)    => return Err(why),
+            };
+
+            let device_id:*mut c_char = std::mem::transmute(device_id);
+            let output_string = CString::from_raw(device_id);
+            return Ok(output_string);
+        }
+        //Err(UsbError::ReadError)
+    }
+
+    fn send_payload(&self){
     }
 
 
@@ -191,14 +248,15 @@ pub enum UsbError{
     NotUnicodeString,
     CouldNotCreateCString,
     CouldNotReadDevPath,
-    ClaimingInterfaceFailed
+    ClaimingInterfaceFailed,
+    ReadError,
 }
 
 extern "C"{
     //int open(const char *pathname, int flags);
     pub fn open(path:*const c_char,flags : c_int) -> c_int;
     //int ioctl (int __fd, unsigned long int __request, ...) __THROW;
-    pub fn ioctl(file_descriptor: c_int, request:u32,data : *const c_int) ->c_int;
+    pub fn ioctl(file_descriptor: c_int, request:u32,data : *const c_void) ->c_int;
 }
 
 //const O_RDONLY:c_int =00;
@@ -206,3 +264,22 @@ const O_RDWR: c_int = 02;
 //IOCTL request type definitions,not sure how portable these are
 //probably will only work on x86_64 systems
 pub const USBDEVFS_CLAIMINTERFACE:u32 = 2147767567;
+pub const _USBDEVFS_CONNECTINFO:u32 = 1074287889;
+pub const _USBDEVFS_SUBMITURB:u32 = 2151175434;
+pub const USBDEVFS_BULK:u32 = 3222820098;
+pub const USB_DIR_IN:u32 = 128;
+
+#[repr(C)]
+#[derive(Copy,Clone,Debug)]
+pub struct ConnectInfo{
+    dev_num:c_uint,
+    slow: c_uchar,
+}
+
+#[repr(C)]
+struct BulkTransfer{
+    endpoint : c_uint,
+    length   : c_uint,
+    timeout  : c_uint,
+    data     : *const c_void,
+}
