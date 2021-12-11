@@ -1,6 +1,5 @@
 # switch-rcm-rust 
-WIP  fusee gelee payload injector for nintendo switch devices that are vulnerable.
-For linux, written in Rust hopefully with zero dependencies.
+WIP  Reimplimentation of [fusee-nano](https://github.com/DavidBuchanan314/fusee-nano) in Rust, for linux.
 
 Currentl can:
 * Detect connected switch rcm mode devices
