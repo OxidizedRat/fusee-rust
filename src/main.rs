@@ -12,16 +12,20 @@ fn main() {
         Ok(device) => device,
         Err(_)   => {println!("{} could not find rcm device{}",RED,WHITE);return},
     };
-    println!("{} found switch rcm device at:{:?}",GREEN, switch.get_usbfs_path());
+    println!("{}Found switch rcm device at:{:?}",GREEN, switch.get_usbfs_path());
     let _test = match switch.claim_interface(){
         Ok(ret)     => ret,
-        Err(_)      =>{println!("{} failed to claim interface{}",RED,WHITE);return},
+        Err(_)      =>{println!("{}Failed to claim interface, Error:{}{}",RED,errno(),WHITE);return},
     };
-    println!("{} interface claimed!{}",GREEN,WHITE);
+    println!("{}Interface claimed!{}",GREEN,WHITE);
     let dev_id = match switch.read_device_id(){
         Ok(id)  => id,
-        Err(_)  => {let e  = errno();println!("error:{}",e);return},
+        Err(_)  => {println!("error:{}",errno());return},
     };
+    println!("Device ID: ");
+    for character in dev_id{
+        print!("{:02x}",character);
+    }
+    println!("");
 
-    println!("device id:{:?}",dev_id);
 }

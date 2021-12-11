@@ -175,18 +175,16 @@ impl SwitchRCM{
             Err(UsbError::ClaimingInterfaceFailed)
         }
     }
-    fn read(&self,request: BulkTransfer) -> Result<*const c_void,UsbError>{
+    fn read(&self,request: &BulkTransfer) -> Result<*const c_void,UsbError>{
         let fd = self.file_descriptor;
         let return_value:i32;
         unsafe{
-            let request = std::mem::transmute::<&BulkTransfer,*const c_void>(&request);
+            let request = std::mem::transmute::<&BulkTransfer,*const c_void>(request);
             return_value = ioctl(fd,USBDEVFS_BULK,request);
+            if return_value>-1{
+                return Ok(request);
+            }
         }
-
-        if return_value>-1{
-            return Ok(request.data);
-        }
-
         Err(UsbError::ReadError)
     }
     //just testing ioctl commands
@@ -208,27 +206,29 @@ impl SwitchRCM{
         Err(UsbError::ClaimingInterfaceFailed)
     } 
 
-    pub fn read_device_id(&self)-> Result<CString,UsbError>{
+    pub fn read_device_id(&self)-> Result<&[u8;16],UsbError>{
     
-        let device_id:&[c_char;16] = &[0;16];
+        let device_id = CString::new("0000000000000000").expect("failed");
+        let device_id = device_id.into_raw();
         unsafe{
-        let device_id = std::mem::transmute::<&[c_char;16],*const c_void>(device_id);
-        
-            let request = BulkTransfer{
-                    endpoint : USB_DIR_IN | 1,
-                    length   : 16,
-                    timeout  : 1000,
+        let device_id:*const c_void = std::mem::transmute(device_id);
+            let request = &BulkTransfer{
+                    endpoint : (USB_DIR_IN | 1) as u32,
+                    length   : 16 as u32,
+                    timeout  : 1000 as u32,
                     data     : device_id,
             };
 
-            let device_id = match self.read(request){
+            let returned_request = match self.read(request){
                 Ok(id)      => id,
                 Err(why)    => return Err(why),
             };
 
-            let device_id:*mut c_char = std::mem::transmute(device_id);
-            let output_string = CString::from_raw(device_id);
-            return Ok(output_string);
+            let new_request:&BulkTransfer = std::mem::transmute(returned_request);
+            let device_id = new_request.data;
+            let device_id:&[u8;16] = std::mem::transmute(device_id);
+            //let output_string = CString::from_vec_unchecked(device_id.to_vec());
+            return Ok(device_id);
         }
         //Err(UsbError::ReadError)
     }
@@ -253,6 +253,8 @@ extern "C"{
     pub fn open(path:*const c_char,flags : c_int) -> c_int;
     //int ioctl (int __fd, unsigned long int __request, ...) __THROW;
     pub fn ioctl(file_descriptor: c_int, request:u32,data : *const c_void) ->c_int;
+    //int * __errno_location(void);
+    //pub fn __errno_location() -> *const c_int;
 }
 
 //const O_RDONLY:c_int =00;
@@ -262,8 +264,8 @@ const O_RDWR: c_int = 02;
 pub const USBDEVFS_CLAIMINTERFACE:u32 = 2147767567;
 pub const _USBDEVFS_CONNECTINFO:u32 = 1074287889;
 pub const _USBDEVFS_SUBMITURB:u32 = 2151175434;
-pub const USBDEVFS_BULK:u32 = 3222820098;
-pub const USB_DIR_IN:u32 = 128;
+pub const USBDEVFS_BULK:u32 = 3222820098; //3222820098
+pub const USB_DIR_IN:c_int = 128;
 
 #[repr(C)]
 #[derive(Copy,Clone,Debug)]
@@ -279,3 +281,17 @@ struct BulkTransfer{
     timeout  : c_uint,
     data     : *const c_void,
 }
+
+
+/*
+pub fn errno()->Errno{
+    let err:i32 = 0;
+    unsafe{
+        let errno = __errno_location();
+
+        let err_pointer:&i32 = std::mem::transmute(errno);
+        let err = *err_pointer;
+    }
+
+}
+*/
