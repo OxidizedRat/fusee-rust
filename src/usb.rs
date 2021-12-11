@@ -8,13 +8,8 @@ use std::ffi::CString;
 const SWITCH_VID:&str = "0955";     //"090c"; test usb device vid and pid 
 const SWITCH_PID:&str = "7321";     //"1000";
 
-pub trait SwitchRCMDevice{
-    fn new() -> Self;
-    fn read_device_id(&self)->Result<CString, UsbError>;
-    fn send_payload(&self);
-}
 
-pub struct UsbDevice{
+pub struct SwitchRCM{
     vid: String,
     pid: String,
     sysfs_path: PathBuf,
@@ -24,7 +19,17 @@ pub struct UsbDevice{
 }
 
 
-impl UsbDevice{
+impl SwitchRCM{
+    pub fn new() -> SwitchRCM{
+        SwitchRCM{
+            vid : SWITCH_VID.to_string(),
+            pid : SWITCH_PID.to_string(),
+            sysfs_path: PathBuf::new(),
+            usbfs_path: PathBuf::new(),
+            interface_number: 0,
+            file_descriptor: 0,
+        }
+    }
     //linux docs say scan every file with /dev/bus/usb
     // to look for our device,not sure if there is a more efficient way.
     //docs also say the usb section is incomplete and outdated
@@ -72,15 +77,21 @@ impl UsbDevice{
                     path.pop();
                     
                     self.sysfs_path = path.clone();
+                    //set usbfs
                     match self.set_usbfs_from_sysfs(){
                         Ok(_)       => (),
                         Err(why)    => return Err(why),
                     };
+                    //set binterface number
                     match self.get_binterface_number(){
                         Ok(_)       => (),
                         Err(why)    => return Err(why),
                     };
-
+                    //set file discriptor
+                    match self.set_file_descriptor(){
+                        Ok(_)   => (),
+                        Err(why)=> return Err(why),
+                    }
                     return Ok(path);
                 }
                 
@@ -90,7 +101,7 @@ impl UsbDevice{
         return Err(UsbError::CouldNotFindDevice);
     }
     //get file discriptor to use with ioctl calls
-    pub fn set_file_descriptor(&mut self) -> Result<c_int,UsbError>{
+    fn set_file_descriptor(&mut self) -> Result<c_int,UsbError>{
         //convert our pathbuf into a c compatible char pointer    
         //not sure if this formatting is idiomatic
         let path = match self.usbfs_path
@@ -195,22 +206,9 @@ impl UsbDevice{
         }
 
         Err(UsbError::ClaimingInterfaceFailed)
-    }
-}
+    } 
 
-impl SwitchRCMDevice for UsbDevice{
-    fn new() -> UsbDevice{
-        UsbDevice{
-            vid : SWITCH_VID.to_string(),
-            pid : SWITCH_PID.to_string(),
-            sysfs_path: PathBuf::new(),
-            usbfs_path: PathBuf::new(),
-            interface_number: 0,
-            file_descriptor: 0,
-        }
-    }
-
-    fn read_device_id(&self)-> Result<CString,UsbError>{
+    pub fn read_device_id(&self)-> Result<CString,UsbError>{
     
         let device_id:&[c_char;16] = &[0;16];
         unsafe{
@@ -235,8 +233,6 @@ impl SwitchRCMDevice for UsbDevice{
         //Err(UsbError::ReadError)
     }
 
-    fn send_payload(&self){
-    }
 
 
 }
