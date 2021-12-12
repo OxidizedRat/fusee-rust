@@ -187,6 +187,19 @@ impl SwitchRCM{
         }
         Err(UsbError::ReadError)
     }
+    fn write(&mut self,request: &BulkTransfer) -> Result<c_int,UsbError>{
+        let fd = self.file_descriptor;
+        let return_value:i32;
+        unsafe{
+            let request = std::mem::transmute::<&BulkTransfer,*const c_void>(request);
+            return_value = ioctl(fd,USBDEVFS_BULK,request);
+            //println!("ret :{} errno:{}",return_value,errno());
+            if return_value>-1{
+                return Ok(return_value);
+            }
+        }
+        Err(UsbError::WriteError)
+    }
     //just testing ioctl commands
     pub fn _get_connect_info(&self) -> Result<ConnectInfo,UsbError>{
         let fd = self.file_descriptor;
@@ -232,7 +245,130 @@ impl SwitchRCM{
         }
         //Err(UsbError::ReadError)
     }
+    pub fn generate_payload(&self,user_payload:&Path)-> Result<Vec<u8>,UsbError>{
+        const PAYLOAD_LENGTH:u32 = 0x30298;
+        const PAYLOAD_START_ADDRESS:u32 = 0x40010E40;
+        const RCM_PAYLOAD_ADDRESS:u32 =	0x40010000;
+        const STACK_SPRAY_START:u32   = 0x40014E40;
+        const STACK_SPRAY_END:u32     = 0x40017000;
 
+        let mut payload:Vec<u8> = Vec::new();
+        
+        for byte in PAYLOAD_LENGTH.to_le_bytes(){
+            payload.push(byte);
+        }
+        //pad payload till it is 680 bytes
+        {
+            let mut padding:Vec<u8> = vec![0;676];
+            payload.append(&mut padding);
+        }
+        //get relocator
+        let relocator_path = Path::new("./intermezzo.bin");
+        let mut relocator = match std::fs::read(relocator_path){
+            Ok(bytes)   => bytes,
+            Err(_)      => return Err(UsbError::RelocatorNotFound),
+        };
+        //let relocator_size = relocator.len();
+        //add relocator to payload
+        payload.append(&mut relocator);
+        
+        //pad again until userpayload
+        {
+            let size_to_pad:usize = 3772;
+            let mut padding:Vec<u8> = vec![0;size_to_pad];
+            payload.append(&mut padding);
+        }
+        //get user payload
+        let user_paylaod = match std::fs::read(user_payload){
+            Ok(bytes)       => bytes,
+            Err(_)          => return Err(UsbError::UserPayloadNotFound),
+        };
+        //add part of payload till stack spray start
+        let mut user_index = 0;
+        {
+            let pad_size = STACK_SPRAY_START - PAYLOAD_START_ADDRESS;
+            for (index,byte) in user_paylaod.iter().enumerate(){
+                user_index = index;
+                if index == pad_size as usize{
+                    break; 
+                }
+                payload.push(*byte);
+            }
+        }
+        // spray stack
+        {
+            let count = (STACK_SPRAY_END -STACK_SPRAY_START)/4;
+            let payload_address_le = RCM_PAYLOAD_ADDRESS.to_le_bytes();
+            for _times in 0..count{
+                payload.push(payload_address_le[0]);
+                payload.push(payload_address_le[1]);
+                payload.push(payload_address_le[2]);
+                payload.push(payload_address_le[3]);
+            }
+        }
+        //add rest of payload
+        for byte in &user_paylaod[user_index..]{
+            payload.push(*byte);
+        }
+        //get lenght of payload and see if it is divisible by 0x1000
+        //pad till is it
+        {
+            let payload_length = payload.len();
+            let pad_size   = 0x1000 - (payload_length % 0x1000);
+            for _number in 0..pad_size{
+                payload.push(0);
+            }
+        }
+        //check payload length 
+        if payload.len() > PAYLOAD_LENGTH as usize{
+            return Err(UsbError::PayloadTooLarge);
+        }
+
+        Ok(payload)
+
+    }
+    pub fn send_payload(&mut self,payload: Vec<u8>) -> Result<c_int,UsbError>{
+        let mut write_count = 0;
+        let mut bytes_written = 0;
+        let chunks_num = payload.len()/0x1000;
+        for chunk in 0..chunks_num{
+            let index = 0x1000*chunk;
+            let payload_ptr: *const c_void = unsafe {std::mem::transmute(payload[index..].as_ptr())};
+            let request = &BulkTransfer{
+                endpoint : (USB_DIR_OUT | 1) as u32,
+                length   : 0x1000,
+                timeout  : 1000 as u32,
+                data     : payload_ptr,
+            };
+
+            let ret_val = match self.write(request){
+                Ok(val)     => val,
+                Err(why)    => return Err(why),
+            };
+            bytes_written += ret_val;
+            write_count +=1;
+        }
+        if write_count%2 == 0{
+            let data = vec![0;0x1000];
+            let ptr: *const c_void = unsafe {std::mem::transmute(data.as_ptr())};
+            let request = &BulkTransfer{
+                endpoint : (USB_DIR_OUT | 1) as u32,
+                length   : 0x1000,
+                timeout  : 1000 as u32,
+                data     : ptr,
+            };
+            let ret_val = match self.write(request){
+                Ok(val)     => val,
+                Err(why)    => return Err(why),
+            };
+            bytes_written +=ret_val;
+        }
+        Ok(bytes_written)
+    }
+
+    pub fn _trigger_pull(){
+
+    }
 
 
 }
@@ -246,6 +382,10 @@ pub enum UsbError{
     CouldNotReadDevPath,
     ClaimingInterfaceFailed,
     ReadError,
+    PayloadTooLarge,
+    RelocatorNotFound,
+    UserPayloadNotFound,
+    WriteError,
 }
 
 extern "C"{
@@ -266,6 +406,7 @@ pub const _USBDEVFS_CONNECTINFO:u32 = 1074287889;
 pub const _USBDEVFS_SUBMITURB:u32 = 2151175434;
 pub const USBDEVFS_BULK:u32 = 3222820098; //3222820098
 pub const USB_DIR_IN:c_int = 128;
+pub const USB_DIR_OUT:c_int = 0;
 
 #[repr(C)]
 #[derive(Copy,Clone,Debug)]
