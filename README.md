@@ -1,7 +1,7 @@
 # switch-rcm-rust 
 Reimplimentation of [fusee-launcher](https://github.com/Qyriad/fusee-launcher) in Rust, for linux.
 
-Actuall payload launching steps completed
+Exploit triggering steps implemented
 * ✅ read device id 
 * ✅ building exploit
 * ✅ pad payload properly
