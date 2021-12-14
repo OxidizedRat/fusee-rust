@@ -53,6 +53,16 @@ fn main() -> Result<(),UsbError> {
         Err(why)    => {println!("Error: {}",errno());return Err(why)}
     };
 
-    println!("{} bytes sent",bytes_written);
+    println!("{:#0x} bytes sent",bytes_written);
+
+    let _trigger = match switch.trigger_pull() {
+        Ok(_)       => (),
+        Err(why)    => {println!("Error:{}",errno());
+                        return Err(why)
+                       },
+
+    };
+
+    println!("Exploit triggered!");
     Ok(())
 }
