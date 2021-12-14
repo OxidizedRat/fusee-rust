@@ -1,8 +1,5 @@
 # switch-rcm-rust 
-WIP  Reimplimentation of [fusee-launcher](https://github.com/Qyriad/fusee-launcher) in Rust, for linux.
-
-Currentl can:
-* Detect connected switch rcm mode devices
+Reimplimentation of [fusee-launcher](https://github.com/Qyriad/fusee-launcher) in Rust, for linux.
 
 Actuall payload launching steps completed
 * ✅ read device id 
@@ -10,4 +7,7 @@ Actuall payload launching steps completed
 * ✅ pad payload properly
 * ✅ change DMA buffer if necessary
 * ✅ send payload
-* ❌ send GET_STATUS request
+* ✅ send GET_STATUS request
+
+## To do ##
+*   make it work
